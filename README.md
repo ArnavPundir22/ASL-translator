@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="asset/banner.png" alt="Handwritten Digit Recognition Banner" width="100%">
+</p>
+
 # 🤟 ASL Translator – Real-Time Sign Language Recognition
 
 An end-to-end **American Sign Language (ASL) recognition system** built using **MediaPipe landmark detection** and **Deep Learning (LSTM)**.  
