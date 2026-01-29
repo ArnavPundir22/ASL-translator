@@ -36,6 +36,8 @@ ASL-translator/
 ├── realtime_test.py             # Real-time ASL prediction
 ├── utils.py                     # MediaPipe detection & keypoint extraction
 │
+├── requirements.txt             # Project dependencies
+│
 ├── hand_landmarker.task         # MediaPipe hand model
 ├── face_landmarker.task         # MediaPipe face model
 ├── pose_landmarker_lite.task    # MediaPipe pose model
@@ -58,7 +60,7 @@ ASL-translator/
 
 ## 🛠️ Tech Stack
 
-- Python 3.10
+- Python 3
 - OpenCV
 - MediaPipe Tasks
 - NumPy
@@ -74,6 +76,12 @@ ASL-translator/
 git clone https://github.com/ArnavPundir22/ASL-translator.git
 cd ASL-translator
 ```
+
+### 2️⃣ Install Dependencies
+```bash
+pip install -r requirements.txt
+```
+
 ---
 
 ## ▶️ Usage
