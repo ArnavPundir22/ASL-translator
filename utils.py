@@ -106,12 +106,9 @@ def extract_keypoints(pose_res, hand_res, face_res):
                 dtype=np.float32
             ).flatten()
 
-  
     keypoints = np.concatenate([pose, face, lh, rh])
 
-    
     if keypoints.shape[0] != 1662:
         raise RuntimeError(f"Feature mismatch: {keypoints.shape[0]}")
-
     return keypoints
 
