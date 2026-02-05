@@ -5,7 +5,7 @@ import numpy as np
 from utils import mediapipe_detection, draw_styled_landmarks, extract_keypoints
 
 DATA_PATH = 'MP_Data'
-actions = ['hello', 'thanks', 'iloveyou','Yes']
+actions = ['hello', 'thanks', 'iloveyou', 'Yes', 'help', 'stop']
 no_sequences = 30
 sequence_length = 30
 

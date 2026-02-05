@@ -5,7 +5,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
 DATA_PATH = 'MP_Data'
-actions = ['hello', 'thanks', 'iloveyou', "Yes"]
+actions = ['hello', 'thanks', 'iloveyou', 'Yes', 'help', 'stop']
 sequence_length = 30
 label_map = {label:i for i,label in enumerate(actions)}
 
