@@ -17,6 +17,9 @@ This project translates **ASL hand gestures into text** by extracting human land
 - `hello`
 - `thanks`
 - `iloveyou`
+-  `yes`
+- `help`
+- `stop`
 
 ---
 
