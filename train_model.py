@@ -5,7 +5,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense
 
 DATA_PATH = 'MP_Data'
-actions = ['hello', 'thanks', 'iloveyou', 'Yes', 'help', 'stop']
+actions = ['hello','love','thank you','help','more','please']
 sequence_length = 30
 label_map = {label:i for i,label in enumerate(actions)}
 
@@ -33,5 +33,5 @@ model = Sequential([
 ])
 
 model.compile('Adam','categorical_crossentropy',metrics=['accuracy'])
-model.fit(X_train, y_train, epochs=50)
+model.fit(X_train, y_train, epochs=100)
 model.save('action.h5')
