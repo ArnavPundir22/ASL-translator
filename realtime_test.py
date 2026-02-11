@@ -17,7 +17,8 @@ while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
-
+        
+    frame = cv2.flip(frame, 1)
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     pose_res, hand_res, face_res = mediapipe_detection(frame_rgb, frame_idx)
