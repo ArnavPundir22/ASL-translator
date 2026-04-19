@@ -1,0 +1,7 @@
+tensorflow==2.12.1
+opencv-python
+mediapipe
+numpy
+matplotlib
+scikit-learn
+scipy
