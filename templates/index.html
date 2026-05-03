@@ -76,7 +76,8 @@
       background: #000;
     }
 
-    video  { display: none; }
+    /* Hidden but still decoded by browser compositor (fixes black canvas on Linux) */
+    video  { position: absolute; width: 0; height: 0; opacity: 0; pointer-events: none; }
     canvas { display: block; width: 100%; height: auto; }
 
     /* Badge overlay (current sign) */
@@ -293,6 +294,9 @@ const SEND_INTERVAL_MS = 100; // ~10 FPS to server
 let fpsSamples = [];
 let lastFrameTime = performance.now();
 
+// Latest landmarks received from server (drawn inside render loop)
+let latestLandmarks = null;
+
 socket.on('connect',    () => { statusMsg.textContent = 'Connected ✓'; });
 socket.on('disconnect', () => { statusMsg.textContent = 'Disconnected'; });
 
@@ -332,7 +336,7 @@ socket.on('result', (data) => {
 
   // ── Landmarks on canvas ──────────────────
   if (data.landmarks) {
-    drawLandmarks(data.landmarks);
+    latestLandmarks = data.landmarks;
   }
 });
 
@@ -348,9 +352,8 @@ btnStart.addEventListener('click', async () => {
       audio: false,
     });
     video.srcObject = stream;
-    const canPlayPromise = new Promise(r => video.addEventListener('canplay', r, { once: true }));
+    await new Promise(r => video.addEventListener('loadedmetadata', r, { once: true }));
     await video.play();
-    await canPlayPromise;
 
     canvas.width  = video.videoWidth  || 640;
     canvas.height = video.videoHeight || 480;
@@ -387,6 +390,11 @@ function loop(ts) {
   ctx.scale(-1, 1);
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   ctx.restore();
+
+  // Draw latest landmarks over the video frame
+  if (latestLandmarks) {
+    drawLandmarks(latestLandmarks);
+  }
 
   // FPS
   const now  = performance.now();
