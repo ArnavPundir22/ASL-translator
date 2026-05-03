@@ -348,8 +348,9 @@ btnStart.addEventListener('click', async () => {
       audio: false,
     });
     video.srcObject = stream;
+    const canPlayPromise = new Promise(r => video.addEventListener('canplay', r, { once: true }));
     await video.play();
-    await new Promise(r => video.addEventListener('canplay', r, { once: true }));
+    await canPlayPromise;
 
     canvas.width  = video.videoWidth  || 640;
     canvas.height = video.videoHeight || 480;
