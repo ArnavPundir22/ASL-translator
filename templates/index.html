@@ -348,10 +348,12 @@ btnStart.addEventListener('click', async () => {
       audio: false,
     });
     video.srcObject = stream;
-    await new Promise(r => video.addEventListener('loadedmetadata', r, { once: true }));
+    const canPlayPromise = new Promise(r => video.addEventListener('canplay', r, { once: true }));
+    await video.play();
+    await canPlayPromise;
 
-    canvas.width  = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
 
     startScr.style.display = 'none';
     running = true;
