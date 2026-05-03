@@ -1,191 +1,255 @@
-import base64
-import time
 import threading
+import time
+from typing import Optional
 
+import av
 import cv2
+import mediapipe as mp
 import numpy as np
-from flask import Flask, render_template, request
-from flask_socketio import SocketIO, emit
+import streamlit as st
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+from streamlit_webrtc import RTCConfiguration, VideoProcessorBase, webrtc_streamer
 from tensorflow.keras.models import load_model
 
-from utils import mediapipe_detection, extract_keypoints
+from utils import draw_styled_landmarks, extract_keypoints
 
 # ──────────────────────────────────────────────
 #  Config
 # ──────────────────────────────────────────────
 ACTIONS = ['hello', 'thanks', 'iloveyou']
+ACTION_COLORS = ['#00dbb4', '#ffb400', '#dc3cb4']
 THRESHOLD = 0.8
 SEQ_LEN = 30
 MAX_SENTENCE = 5
 
-POSE_CONNECTIONS = [
-    (11, 12),
-    (11, 13), (13, 15),
-    (12, 14), (14, 16),
-    (11, 23), (12, 24),
-    (23, 24),
-    (23, 25), (25, 27),
-    (24, 26), (26, 28),
-]
-
-HAND_CONNECTIONS = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (0, 9), (9, 10), (10, 11), (11, 12),
-    (0, 13), (13, 14), (14, 15), (15, 16),
-    (0, 17), (17, 18), (18, 19), (19, 20),
-    (5, 9), (9, 13), (13, 17),
-]
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+)
 
 # ──────────────────────────────────────────────
-#  App & model
+#  Model (cached across Streamlit reruns)
 # ──────────────────────────────────────────────
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins=['http://localhost:5000', 'http://127.0.0.1:5000'], async_mode='threading')
 
-model = load_model('action.h5', compile=False)
-
-# Shared MediaPipe landmarkers live in utils.py module-level globals.
-# A lock ensures only one thread calls detect_for_video at a time so
-# the required monotonically-increasing timestamp constraint holds.
-mp_lock = threading.Lock()
-
-# ──────────────────────────────────────────────
-#  Per-session state
-# ──────────────────────────────────────────────
-sessions: dict = {}
-sessions_lock = threading.Lock()
-
-
-def _get_session(sid: str) -> dict:
-    with sessions_lock:
-        if sid not in sessions:
-            sessions[sid] = {
-                'sequence': [],
-                'sentence': [],
-                'last_action': None,
-                'confidence': None,
-            }
-        return sessions[sid]
+@st.cache_resource
+def load_asl_model():
+    return load_model('action.h5', compile=False)
 
 
 # ──────────────────────────────────────────────
-#  Landmark serialisation helpers
+#  Video processor
 # ──────────────────────────────────────────────
 
-def _build_landmarks(pose_res, hand_res, face_res) -> dict:
-    """Return normalised landmark data for browser-side Canvas drawing."""
-    data = {'pose': [], 'face': [], 'hands': []}
+class ASLProcessor(VideoProcessorBase):
+    """Per-session WebRTC video processor: MediaPipe detection + LSTM inference."""
 
-    if pose_res.pose_landmarks:
-        data['pose'] = [[round(p.x, 4), round(p.y, 4)]
-                        for p in pose_res.pose_landmarks[0]]
+    def __init__(self):
+        # Per-session MediaPipe landmarkers keep timestamps independent per user.
+        self._pose_lm = vision.PoseLandmarker.create_from_options(
+            vision.PoseLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path="pose_landmarker_lite.task"),
+                running_mode=vision.RunningMode.VIDEO,
+            )
+        )
+        self._hand_lm = vision.HandLandmarker.create_from_options(
+            vision.HandLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path="hand_landmarker.task"),
+                running_mode=vision.RunningMode.VIDEO,
+                num_hands=2,
+            )
+        )
+        self._face_lm = vision.FaceLandmarker.create_from_options(
+            vision.FaceLandmarkerOptions(
+                base_options=python.BaseOptions(model_asset_path="face_landmarker.task"),
+                running_mode=vision.RunningMode.VIDEO,
+            )
+        )
 
-    if face_res.face_landmarks:
-        data['face'] = [[round(p.x, 4), round(p.y, 4)]
-                        for p in face_res.face_landmarks[0]]
+        # Shared state (read by the main thread, written by the recv thread)
+        self.lock = threading.Lock()
+        self.sequence: list = []
+        self.sentence: list = []
+        self.last_action: Optional[str] = None
+        self.confidence: dict = {a: 0.0 for a in ACTIONS}
+        self.pose_ok: bool = False
+        self.hand_ok: bool = False
+        self.face_ok: bool = False
 
-    if hand_res.hand_landmarks:
-        for hand in hand_res.hand_landmarks:
-            data['hands'].append([[round(p.x, 4), round(p.y, 4)]
-                                  for p in hand])
+    def _detect(self, frame_rgb: np.ndarray, ts_ms: int):
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+        pose_res = self._pose_lm.detect_for_video(mp_image, ts_ms)
+        hand_res = self._hand_lm.detect_for_video(mp_image, ts_ms)
+        face_res = self._face_lm.detect_for_video(mp_image, ts_ms)
+        return pose_res, hand_res, face_res
 
-    return data
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        model = load_asl_model()
 
+        img = frame.to_ndarray(format="bgr24")
+        img = cv2.flip(img, 1)
+        frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        ts_ms = int(time.time() * 1000)
 
-# ──────────────────────────────────────────────
-#  Routes
-# ──────────────────────────────────────────────
+        pose_res, hand_res, face_res = self._detect(frame_rgb, ts_ms)
+        draw_styled_landmarks(img, pose_res, hand_res, face_res)
+        keypoints = extract_keypoints(pose_res, hand_res, face_res)
 
-@app.route('/')
-def index():
-    return render_template('index.html',
-                           actions=ACTIONS,
-                           pose_connections=POSE_CONNECTIONS,
-                           hand_connections=HAND_CONNECTIONS)
+        with self.lock:
+            self.pose_ok = bool(pose_res.pose_landmarks)
+            self.hand_ok = bool(hand_res.hand_landmarks)
+            self.face_ok = bool(face_res.face_landmarks)
 
+            self.sequence.append(keypoints)
+            self.sequence = self.sequence[-SEQ_LEN:]
 
-# ──────────────────────────────────────────────
-#  Socket.IO events
-# ──────────────────────────────────────────────
+            if len(self.sequence) == SEQ_LEN:
+                raw = model.predict(
+                    np.expand_dims(self.sequence, axis=0), verbose=0
+                )[0]
+                self.confidence = {a: float(v) for a, v in zip(ACTIONS, raw)}
+                top_idx = int(np.argmax(raw))
+                if raw[top_idx] > THRESHOLD:
+                    detected = ACTIONS[top_idx]
+                    if detected != self.last_action:
+                        self.sentence.append(detected)
+                        self.sentence = self.sentence[-MAX_SENTENCE:]
+                    self.last_action = detected
+                else:
+                    self.last_action = None
 
-@socketio.on('connect')
-def handle_connect():
-    _get_session(request.sid)
-
-
-@socketio.on('disconnect')
-def handle_disconnect():
-    with sessions_lock:
-        sessions.pop(request.sid, None)
-
-
-@socketio.on('clear')
-def handle_clear():
-    state = _get_session(request.sid)
-    state['sentence'] = []
-    state['last_action'] = None
-
-
-@socketio.on('frame')
-def handle_frame(data):
-    """Receive a base64-encoded JPEG frame, run inference, emit results."""
-    sid = request.sid
-    state = _get_session(sid)
-
-    # ── Decode ───────────────────────────────
-    try:
-        img_bytes = base64.b64decode(data['frame'])
-        arr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if frame is None:
-            return
-    except Exception:
-        return
-
-    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    ts_ms = int(time.time() * 1000)
-
-    # ── MediaPipe (serialised) ────────────────
-    with mp_lock:
-        pose_res, hand_res, face_res = mediapipe_detection(frame_rgb, ts_ms)
-
-    # ── Keypoints & prediction ────────────────
-    keypoints = extract_keypoints(pose_res, hand_res, face_res)
-    state['sequence'].append(keypoints)
-    state['sequence'] = state['sequence'][-SEQ_LEN:]
-
-    if len(state['sequence']) == SEQ_LEN:
-        raw = model.predict(
-            np.expand_dims(state['sequence'], axis=0), verbose=0
-        )[0]
-        state['confidence'] = {a: float(v) for a, v in zip(ACTIONS, raw)}
-
-        top_idx = int(np.argmax(raw))
-        if raw[top_idx] > THRESHOLD:
-            detected = ACTIONS[top_idx]
-            if detected != state['last_action']:
-                state['sentence'].append(detected)
-                state['sentence'] = state['sentence'][-MAX_SENTENCE:]
-            state['last_action'] = detected
-        else:
-            state['last_action'] = None
-
-    # ── Emit result ───────────────────────────
-    emit('result', {
-        'action':     state['last_action'],
-        'confidence': state['confidence'],
-        'sentence':   state['sentence'].copy(),
-        'landmarks':  _build_landmarks(pose_res, hand_res, face_res),
-        'pose_ok':    bool(pose_res.pose_landmarks),
-        'hand_ok':    bool(hand_res.hand_landmarks),
-        'face_ok':    bool(face_res.face_landmarks),
-    })
+        return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
 # ──────────────────────────────────────────────
-#  Entry point
+#  UI helpers
 # ──────────────────────────────────────────────
 
-if __name__ == '__main__':
-    socketio.run(app, host='127.0.0.1', port=5000, debug=False)
+def _confidence_html(action: str, color: str, value: float) -> str:
+    pct = value * 100
+    return (
+        f"<div style='margin-bottom:8px'>"
+        f"<div style='display:flex;justify-content:space-between;"
+        f"font-size:0.85rem;margin-bottom:3px'>"
+        f"<span>{action}</span>"
+        f"<span style='color:{color}'>{pct:.0f}%</span></div>"
+        f"<div style='background:rgba(255,255,255,0.08);border-radius:4px;height:8px'>"
+        f"<div style='background:{color};width:{pct:.1f}%;height:100%;"
+        f"border-radius:4px;transition:width 0.25s'></div></div></div>"
+    )
+
+
+def _status_dot(ok: bool) -> str:
+    return "🟢" if ok else "⚫"
+
+
+# ──────────────────────────────────────────────
+#  Main app
+# ──────────────────────────────────────────────
+
+def main():
+    st.set_page_config(
+        page_title="ASL Translator",
+        page_icon="🤟",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
+
+    st.markdown(
+        "<h1 style='color:#00dbb4;letter-spacing:2px;margin-bottom:0'>⬡ ASL Translator</h1>"
+        "<p style='color:#52525b;margin-top:2px'>Real-time American Sign Language recognition</p>",
+        unsafe_allow_html=True,
+    )
+
+    col_vid, col_info = st.columns([3, 2], gap="large")
+
+    with col_vid:
+        ctx = webrtc_streamer(
+            key="asl-translator",
+            video_processor_factory=ASLProcessor,
+            rtc_configuration=RTC_CONFIG,
+            media_stream_constraints={"video": True, "audio": False},
+            async_processing=True,
+        )
+
+    with col_info:
+        st.subheader("Confidence")
+        conf_placeholder = st.empty()
+
+        st.subheader("Current Sign")
+        action_placeholder = st.empty()
+
+        st.subheader("Sentence")
+        sentence_placeholder = st.empty()
+
+        st.markdown("---")
+        if st.button("🗑️ Clear Sentence") and ctx.video_processor:
+            with ctx.video_processor.lock:
+                ctx.video_processor.sentence.clear()
+                ctx.video_processor.last_action = None
+
+        st.subheader("Detection Status")
+        status_cols = st.columns(3)
+        pose_ph = status_cols[0].empty()
+        hand_ph = status_cols[1].empty()
+        face_ph = status_cols[2].empty()
+
+    # ── Read processor state and refresh displays ─────────────────────────────
+    proc = ctx.video_processor if ctx.video_processor else None
+
+    if proc:
+        with proc.lock:
+            confidence = proc.confidence.copy()
+            sentence = proc.sentence.copy()
+            last_action = proc.last_action
+            pose_ok = proc.pose_ok
+            hand_ok = proc.hand_ok
+            face_ok = proc.face_ok
+    else:
+        confidence = {a: 0.0 for a in ACTIONS}
+        sentence = []
+        last_action = None
+        pose_ok = hand_ok = face_ok = False
+
+    conf_html = "".join(
+        _confidence_html(a, c, confidence.get(a, 0.0))
+        for a, c in zip(ACTIONS, ACTION_COLORS)
+    )
+    conf_placeholder.markdown(conf_html, unsafe_allow_html=True)
+
+    if last_action:
+        action_placeholder.markdown(
+            f"<p style='font-size:2rem;font-weight:bold;color:#00dbb4;"
+            f"background:rgba(0,160,130,0.15);padding:8px 16px;border-radius:8px;"
+            f"display:inline-block'>{last_action.upper()}</p>",
+            unsafe_allow_html=True,
+        )
+    else:
+        action_placeholder.markdown(
+            "<p style='color:#52525b;font-style:italic'>No sign detected</p>",
+            unsafe_allow_html=True,
+        )
+
+    if sentence:
+        sentence_placeholder.markdown(
+            f"<p style='font-size:1.5rem;color:#00dbb4;letter-spacing:1px'>"
+            f"{' '.join(sentence)}</p>",
+            unsafe_allow_html=True,
+        )
+    else:
+        sentence_placeholder.markdown(
+            "<p style='color:#52525b;font-style:italic'>Waiting for sign…</p>",
+            unsafe_allow_html=True,
+        )
+
+    pose_ph.markdown(f"{_status_dot(pose_ok)} Pose")
+    hand_ph.markdown(f"{_status_dot(hand_ok)} Hand")
+    face_ph.markdown(f"{_status_dot(face_ok)} Face")
+
+    # Rerun every 300 ms while the stream is active to refresh the metrics panel.
+    if ctx.state.playing:
+        time.sleep(0.3)
+        st.rerun()
+
+
+if __name__ == "__main__":
+    main()
