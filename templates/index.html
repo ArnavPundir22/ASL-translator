@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ASL Translator</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0c0c0e;
+      --surface:   rgba(18,18,22,0.88);
+      --border:    rgba(255,255,255,0.08);
+      --teal:      #00dbb4;
+      --amber:     #ffb400;
+      --pink:      #dc3cb4;
+      --text:      #d4d4d8;
+      --muted:     #52525b;
+      --bar-bg:    rgba(30,30,34,0.90);
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Courier New', Courier, monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── Top bar ────────────────────────────── */
+    #topbar {
+      width: 100%;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      height: 52px;
+      flex-shrink: 0;
+    }
+    #topbar h1 { font-size: 1.1rem; color: var(--teal); letter-spacing: 1px; }
+    #topbar .meta { display: flex; gap: 28px; align-items: center; }
+    #fps { color: var(--muted); font-size: 0.78rem; }
+
+    /* Status dots */
+    .dot-group { display: flex; gap: 18px; align-items: center; }
+    .dot-item  { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; color: var(--muted); }
+    .dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--muted); transition: background 0.2s;
+    }
+    .dot.active { background: #00d26a; }
+
+    /* ── Main area ──────────────────────────── */
+    #main {
+      position: relative;
+      flex: 1;
+      width: 100%;
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 12px 0;
+    }
+
+    #canvas-wrap {
+      position: relative;
+      width: 100%;
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #000;
+    }
+
+    video  { display: none; }
+    canvas { display: block; width: 100%; height: auto; }
+
+    /* Badge overlay (current sign) */
+    #badge {
+      position: absolute;
+      top: 12px; left: 12px;
+      background: rgba(0,160,130,0.82);
+      color: #fff;
+      padding: 4px 16px 4px 12px;
+      border-radius: 20px;
+      font-size: 1.1rem;
+      font-weight: bold;
+      letter-spacing: 2px;
+      display: none;
+      backdrop-filter: blur(4px);
+    }
+
+    /* ── Confidence panel ────────────────────── */
+    #conf-panel {
+      position: absolute;
+      top: 12px; right: 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      width: 230px;
+      backdrop-filter: blur(6px);
+    }
+    #conf-panel .panel-title {
+      font-size: 0.75rem;
+      color: var(--muted);
+      letter-spacing: 2px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+    }
+    .conf-row { margin-bottom: 6px; }
+    .conf-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.75rem;
+      margin-bottom: 3px;
+      color: var(--text);
+    }
+    .conf-track {
+      width: 100%;
+      height: 7px;
+      background: rgba(255,255,255,0.07);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .conf-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 4px;
+      transition: width 0.25s ease;
+    }
+
+    /* ── Bottom bar ──────────────────────────── */
+    #bottombar {
+      width: 100%;
+      max-width: 900px;
+      background: var(--bar-bg);
+      border: 1px solid var(--border);
+      border-top: none;
+      border-radius: 0 0 10px 10px;
+      padding: 10px 18px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+      margin-bottom: 12px;
+    }
+    #sentence {
+      font-size: 1.4rem;
+      color: var(--teal);
+      letter-spacing: 1px;
+      flex: 1;
+      min-height: 1.8rem;
+    }
+    #sentence.waiting { color: var(--muted); font-size: 0.85rem; }
+
+    #btn-clear {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.78rem;
+      font-family: inherit;
+      transition: background 0.15s;
+      flex-shrink: 0;
+      margin-left: 12px;
+    }
+    #btn-clear:hover { background: rgba(255,255,255,0.12); }
+
+    /* ── Start screen ────────────────────────── */
+    #start-screen {
+      position: absolute;
+      inset: 0;
+      background: rgba(0,0,0,0.82);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      border-radius: 10px;
+    }
+    #start-screen p { color: var(--muted); margin-bottom: 20px; font-size: 0.9rem; }
+    #btn-start {
+      background: var(--teal);
+      color: #000;
+      border: none;
+      padding: 12px 32px;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: bold;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.15s;
+    }
+    #btn-start:hover { opacity: 0.85; }
+    #btn-start:disabled { opacity: 0.5; cursor: default; }
+
+    #status-msg { color: var(--muted); font-size: 0.78rem; margin-top: 12px; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div id="topbar">
+  <h1>⬡ ASL Translator</h1>
+  <div class="meta">
+    <div class="dot-group">
+      <div class="dot-item"><div class="dot" id="dot-pose"></div>Pose</div>
+      <div class="dot-item"><div class="dot" id="dot-hand"></div>Hand</div>
+      <div class="dot-item"><div class="dot" id="dot-face"></div>Face</div>
+    </div>
+    <span id="fps">FPS —</span>
+  </div>
+</div>
+
+<!-- Main video area -->
+<div id="main">
+  <div id="canvas-wrap">
+    <video id="video" autoplay muted playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <!-- Current-sign badge -->
+    <div id="badge"></div>
+
+    <!-- Confidence panel -->
+    <div id="conf-panel">
+      <div class="panel-title">Confidence</div>
+      {% for action in actions %}
+      <div class="conf-row" id="conf-row-{{ action }}">
+        <div class="conf-label">
+          <span>{{ action }}</span>
+          <span id="conf-pct-{{ action }}">—</span>
+        </div>
+        <div class="conf-track">
+          <div class="conf-fill" id="conf-fill-{{ action }}"
+               style="background:{{ loop.cycle('#00dbb4','#ffb400','#dc3cb4') }}"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Start overlay -->
+    <div id="start-screen">
+      <p>Allow camera access then click Start</p>
+      <button id="btn-start">▶ Start Camera</button>
+      <div id="status-msg"></div>
+    </div>
+  </div>
+
+  <!-- Bottom sentence bar -->
+  <div id="bottombar">
+    <div id="sentence" class="waiting">Waiting for sign…</div>
+    <button id="btn-clear">Clear</button>
+  </div>
+</div>
+
+<script>
+// ──────────────────────────────────────────────
+//  Constants mirrored from server
+// ──────────────────────────────────────────────
+const POSE_CONNECTIONS = {{ pose_connections | tojson }};
+const HAND_CONNECTIONS = {{ hand_connections | tojson }};
+
+// ──────────────────────────────────────────────
+//  Elements
+// ──────────────────────────────────────────────
+const video      = document.getElementById('video');
+const canvas     = document.getElementById('canvas');
+const ctx        = canvas.getContext('2d');
+const badge      = document.getElementById('badge');
+const sentenceEl = document.getElementById('sentence');
+const fpsEl      = document.getElementById('fps');
+const btnStart   = document.getElementById('btn-start');
+const btnClear   = document.getElementById('btn-clear');
+const statusMsg  = document.getElementById('status-msg');
+const startScr   = document.getElementById('start-screen');
+
+// ──────────────────────────────────────────────
+//  Socket.IO
+// ──────────────────────────────────────────────
+const socket = io();
+let running  = false;
+let lastSend = 0;
+const SEND_INTERVAL_MS = 100; // ~10 FPS to server
+
+// FPS tracking
+let fpsSamples = [];
+let lastFrameTime = performance.now();
+
+socket.on('connect',    () => { statusMsg.textContent = 'Connected ✓'; });
+socket.on('disconnect', () => { statusMsg.textContent = 'Disconnected'; });
+
+socket.on('result', (data) => {
+  // ── Confidence bars ─────────────────────
+  if (data.confidence) {
+    for (const [action, conf] of Object.entries(data.confidence)) {
+      const pct = Math.round(conf * 100);
+      const fill = document.getElementById(`conf-fill-${action}`);
+      const label = document.getElementById(`conf-pct-${action}`);
+      if (fill)  fill.style.width  = pct + '%';
+      if (label) label.textContent = pct + '%';
+    }
+  }
+
+  // ── Status dots ──────────────────────────
+  document.getElementById('dot-pose').classList.toggle('active', data.pose_ok);
+  document.getElementById('dot-hand').classList.toggle('active', data.hand_ok);
+  document.getElementById('dot-face').classList.toggle('active', data.face_ok);
+
+  // ── Current sign badge ───────────────────
+  if (data.action) {
+    badge.textContent = data.action.toUpperCase();
+    badge.style.display = 'block';
+  } else {
+    badge.style.display = 'none';
+  }
+
+  // ── Sentence ─────────────────────────────
+  if (data.sentence && data.sentence.length) {
+    sentenceEl.textContent = data.sentence.join(' ');
+    sentenceEl.classList.remove('waiting');
+  } else {
+    sentenceEl.textContent = 'Waiting for sign…';
+    sentenceEl.classList.add('waiting');
+  }
+
+  // ── Landmarks on canvas ──────────────────
+  if (data.landmarks) {
+    drawLandmarks(data.landmarks);
+  }
+});
+
+// ──────────────────────────────────────────────
+//  Camera & frame capture
+// ──────────────────────────────────────────────
+btnStart.addEventListener('click', async () => {
+  btnStart.disabled = true;
+  statusMsg.textContent = 'Requesting camera…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await new Promise(r => video.addEventListener('loadedmetadata', r, { once: true }));
+
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    startScr.style.display = 'none';
+    running = true;
+    requestAnimationFrame(loop);
+  } catch (err) {
+    statusMsg.textContent = 'Camera error: ' + err.message;
+    btnStart.disabled = false;
+  }
+});
+
+btnClear.addEventListener('click', () => {
+  socket.emit('clear');
+  sentenceEl.textContent = 'Waiting for sign…';
+  sentenceEl.classList.add('waiting');
+  badge.style.display = 'none';
+});
+
+// ──────────────────────────────────────────────
+//  Render loop
+// ──────────────────────────────────────────────
+const offscreen = document.createElement('canvas');
+const offCtx    = offscreen.getContext('2d');
+
+function loop(ts) {
+  if (!running) return;
+  requestAnimationFrame(loop);
+
+  // Draw mirrored video to canvas
+  ctx.save();
+  ctx.translate(canvas.width, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  ctx.restore();
+
+  // FPS
+  const now  = performance.now();
+  const dt   = now - lastFrameTime;
+  lastFrameTime = now;
+  fpsSamples.push(1000 / dt);
+  if (fpsSamples.length > 20) fpsSamples.shift();
+  const avgFps = fpsSamples.reduce((a,b) => a+b, 0) / fpsSamples.length;
+  fpsEl.textContent = `FPS ${Math.round(avgFps)}`;
+
+  // Send frame to server at limited rate
+  if (now - lastSend >= SEND_INTERVAL_MS) {
+    lastSend = now;
+    // Capture mirrored frame into offscreen canvas for server
+    offscreen.width  = canvas.width;
+    offscreen.height = canvas.height;
+    offCtx.save();
+    offCtx.translate(offscreen.width, 0);
+    offCtx.scale(-1, 1);
+    offCtx.drawImage(video, 0, 0, offscreen.width, offscreen.height);
+    offCtx.restore();
+
+    const b64 = offscreen.toDataURL('image/jpeg', 0.7).split(',')[1];
+    socket.emit('frame', { frame: b64 });
+  }
+}
+
+// ──────────────────────────────────────────────
+//  Landmark drawing
+// ──────────────────────────────────────────────
+function toPixel(pt) {
+  // Landmarks are normalised [0,1]; mirror X to match the flipped video
+  return [(1 - pt[0]) * canvas.width, pt[1] * canvas.height];
+}
+
+function drawConnection(pts, a, b, color, lineWidth) {
+  if (!pts[a] || !pts[b]) return;
+  const [x1,y1] = toPixel(pts[a]);
+  const [x2,y2] = toPixel(pts[b]);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = lineWidth;
+  ctx.stroke();
+}
+
+function drawDot(pt, color, radius, strokeColor) {
+  const [x, y] = toPixel(pt);
+  ctx.beginPath();
+  ctx.arc(x, y, radius, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  if (strokeColor) {
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+}
+
+function drawLandmarks(lm) {
+  // ── Face ─────────────────────────────────
+  for (const pt of lm.face) {
+    drawDot(pt, '#00c8b4', 1);
+  }
+
+  // ── Pose ─────────────────────────────────
+  const pose = lm.pose;
+  for (const [a, b] of POSE_CONNECTIONS) {
+    drawConnection(pose, a, b, '#50dc50', 2);
+  }
+  for (const pt of pose) {
+    drawDot(pt, '#00ff64', 3);
+  }
+
+  // ── Hands ────────────────────────────────
+  const handColors = [
+    { fill: '#00dcff', line: '#00a0c8', stroke: null },
+    { fill: '#ff8c00', line: '#c06400', stroke: null },
+  ];
+  for (let h = 0; h < lm.hands.length; h++) {
+    const hand = lm.hands[h];
+    const c    = handColors[h] || handColors[0];
+    for (const [a, b] of HAND_CONNECTIONS) {
+      drawConnection(hand, a, b, c.line, 2);
+    }
+    for (const pt of hand) {
+      drawDot(pt, c.fill, 4, 'rgba(255,255,255,0.6)');
+    }
+  }
+}
+</script>
+</body>
+</html>

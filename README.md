@@ -35,10 +35,14 @@ This project translates **ASL hand gestures into text** by extracting human land
 ```
 ASL-translator/
 │
+├── app.py                       # Flask + Socket.IO web server (web app entry point)
 ├── collect_data.py              # Collect landmark data using webcam
 ├── train_model.py               # Train LSTM model
-├── realtime_test.py             # Real-time ASL prediction
+├── realtime_test.py             # Real-time ASL prediction (desktop)
 ├── utils.py                     # MediaPipe detection & keypoint extraction
+│
+├── templates/
+│   └── index.html               # Web frontend (webcam + Canvas overlay + UI)
 │
 ├── requirements.txt             # Project dependencies
 │
@@ -57,7 +61,9 @@ ASL-translator/
 - Multi-modal landmark extraction (Face + Pose + Both Hands)
 - Automatic dataset generation
 - LSTM-based temporal gesture learning
-- Real-time webcam inference
+- **Web-based real-time inference** — runs in any browser, no local OpenCV window required
+- Landmark overlay drawn on HTML5 Canvas (pose skeleton, hand skeleton, face dots)
+- Confidence panel, live sentence history, and sign badge
 - Easy to extend with new gestures
 
 ---
@@ -70,6 +76,8 @@ ASL-translator/
 - NumPy
 - TensorFlow / Keras
 - Scikit-learn
+- Flask + Flask-SocketIO (web server)
+- HTML5 Canvas + Socket.IO (frontend)
 
 ---
 
@@ -109,11 +117,24 @@ python train_model.py
 
 ---
 
-### Step 3: Run Real-Time Prediction
+### Step 3: Run the Web App
+```bash
+python app.py
+```
+- Opens a browser-based interface at **http://localhost:5000**
+- Click **▶ Start Camera** and allow webcam access
+- Perform ASL signs — predictions appear in real time
+- Press **Clear** to reset the sentence
+
+> **Note:** The Flask server must be running while you use the browser interface. The model inference and MediaPipe processing happen server-side; only JPEG frames and JSON results are sent over the local network.
+
+---
+
+### Step 3 (alternative): Desktop-only Mode
 ```bash
 python realtime_test.py
 ```
-- Displays predicted gestures live on the screen  
+- Displays predicted gestures live in an OpenCV window  
 - Press **`q`** to exit  
 
 ---
@@ -157,8 +178,8 @@ Softmax Output
 - Add more ASL gestures
 - Sentence-level translation
 - Text-to-speech output
-- GUI-based interface
 - Transformer-based sequence models
+- Deploy to a cloud server for remote access
 
 ---
 
