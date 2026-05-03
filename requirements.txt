@@ -5,3 +5,6 @@ numpy
 matplotlib
 scikit-learn
 scipy
+flask
+flask-socketio
+eventlet
